@@ -1,6 +1,7 @@
 #!/Users/tom/.virtualenvs/did/bin/python3
 
 from pathlib import Path
+import zc.lockfile
 import os
 import psutil
 
@@ -90,9 +91,15 @@ class TimeParser(object):
 
 class FileCache(object):
 
-    def __init__(self, file_path, max_age= 5 * 60 * 1000):
+    def __init__(self, file_path, max_age=5 * 60 * 1000, lockfile=None):
         self._file_path = file_path
         self._max_age = max_age
+        if lockfile:
+            self._lockfile = lockfile
+        else:
+            home = str(Path.home())
+            self._lockfile = '%s/.didlf' % home
+
 
     def age(self):
         now = int(datetime.utcnow().timestamp() * 1000)
@@ -113,41 +120,27 @@ class FileCache(object):
         if self.age() > self._max_age and not self._refresh_in_progress():
             pid = os.fork()
             if pid == 0: # We're the child
-                print('I am fork', file=sys.stderr)
                 self._refresh_cache()
                 exit(1)
-            else:
-                print('I am OG', file=sys.stderr)
 
         return tasks
 
-    def _get_pidfile(self):
-        home = str(Path.home())
-        pidfile = '%s/.didpid' % home
-        return pidfile
-
     def _refresh_in_progress(self):
         try:
-            with open(self._get_pidfile(), 'r') as f:
-                return True
-            #    pid = int(f.read())
-            #if psutil.pid_exists(pid):
-            #    return True
-            #else:
-            #    os.remove(self,_get_pidfile())
-            #    return False
-        except FileNotFoundError:
-            return False
-        except ValueError:
-            return False
+            zc.lockfile.LockFile(self._lockfile)
+        except zc.lockfile.LockError:
+            return True
+        return False
 
     def _refresh_cache(self):
-        with open(self._get_pidfile(), 'w') as f:
-            f.write(str(os.getpid()))
-        refreshed_content = self.refresh_cache()
-        with open(self._file_path, 'w') as f:
-            f.write(refreshed_content)
-        os.remove(self._get_pidfile())
+        try:
+            lock = zc.lockfile.LockFile(self._lockfile)
+            refreshed_content = self.refresh_cache()
+            with open(self._file_path, 'w') as f:
+                f.write(refreshed_content)
+            lock.close()
+        except zc.lockfile.LockError:
+            pass
 
     def refresh_cache(self):
         raise NotImplementedError
@@ -168,6 +161,7 @@ class TogglCache(FileCache):
         for project in projects:
             client = clients.get(project.get('client'))
             tasks = st.tasks(project.get('id'))
+
             for task in tasks:
                 task_object = {
                     'client': client.get('name'),
@@ -179,7 +173,8 @@ class TogglCache(FileCache):
 
         return json.dumps({'tasks': task_list})
 
-toggl = TogglCache('test.txt')
+home = str(Path.home())
+toggl = TogglCache('%s/.toggl.json' % home)
 
 text = ' '.join(sys.argv[1:]).strip()
 
